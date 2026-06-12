@@ -2,61 +2,105 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project: swift-yeelight-wifi
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
 
-A Swift port of [`node-yeelight-wifi`](https://github.com/Bastl34/node-yeelight-wifi) for controlling Yeelight smart bulbs over the local network. Public API mirrors the JS library 1:1 (see `YeelightWiFi` typealiases in `Sources/YeelightWiFi/YeelightWiFi.swift`).
+This project is indexed by GitNexus as **yeelight-station-macos** (13 symbols, 9 relationships, 0 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-**Platforms:** macOS 12+, Swift 5.9+. macOS-only — uses `Network.framework` (`NWConnection`, `NWConnectionGroup`) and the POSIX `getifaddrs` API. Linux is intentionally out of scope.
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/yeelight-station-macos/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/yeelight-station-macos/clusters` | All functional areas |
+| `gitnexus://repo/yeelight-station-macos/processes` | All execution flows |
+| `gitnexus://repo/yeelight-station-macos/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->
+
+---
+
+# Project: swift-yeelight-wifi
+
+A Swift port of the Node.js [`node-yeelight-wifi`](https://github.com/Bastl34/node-yeelight-wifi) library for controlling Yeelight smart bulbs over the local network. Swift package name on disk is `swift-yeelight-wifi`; the product consumers import is `YeelightWiFi`. macOS 12+ only — uses `Network.framework` and `getifaddrs`.
 
 ## Build, Run, Test
 
+Swift Package Manager, no Xcode project. All commands run from repo root.
+
 ```bash
-swift build                              # build library + executables
-swift run Example                        # run the SSDP discovery + control sample (port of examples/example.js)
-swift run TestOff                        # run the in-source test program (off() handler removal)
-swift test                               # run any XCTest targets (none today — TestOff/ is an executable, not a test target)
+swift build                           # Debug build of all targets
+swift build -c release                # Release build
+swift run Example                     # Run the Example executable (Examples/main.swift) — requires a bulb on the LAN
+swift run TestOff                     # Run the in-process test executable (TestOff/main.swift) — offline, no bulb needed
 ```
 
-This is a SwiftPM-only project (see `Package.swift`). Three products: library `YeelightWiFi`, executable `Example`, executable `TestOff`. No external dependencies, no CocoaPods, no Xcode project file is required — open `Package.swift` in Xcode if preferred.
+The `TestOff` target is a self-contained `main.swift` that exercises `YeelightDevice.on/off` lifecycle (4 cases) using `Thread.sleep` to wait for async emit. There is no XCTest target — keep the `TestOff` pattern when adding new offline tests, and add a separate executable target that depends on `YeelightWiFi` if it needs new paths under `TestOff/`.
 
-There is no linter or formatter configured; match the surrounding Swift style (4-space indent, `MARK:` headers, doc comments on every public symbol).
+To add a third-party dependency, edit `Package.swift` directly (no `Package.resolved` is checked in; this repo currently has no external dependencies).
 
-## Codebase Architecture
+## Architecture
 
-All library code lives in `Sources/YeelightWiFi/`. Six files, each with a focused responsibility:
+The library reproduces the upstream Node.js public surface as closely as possible: same two classes, same event names, same JSON-RPC command wire format. The public façade is `YeelightWiFi` (an empty `enum` namespace) which exposes two typealiases so call sites can use the original names: `YeelightWiFi.Yeelight == YeelightDevice` and `YeelightWiFi.Lookup == YeelightLookup`. Internal types use the descriptive names.
 
-| File | Responsibility |
-|------|----------------|
-| `YeelightWiFi.swift` | Public façade: `YeelightWiFi` enum exposing `Yeelight` and `Lookup` typealiases. **No types are defined here.** |
-| `YeelightEvents.swift` | `YeelightEvent` enum (string rawValues matching JS event names), event handler typealiases, `FailedEvent` / `TimeoutEvent` / `SuccessEvent` payloads, `YeelightError`. |
-| `Yeelight.swift` | `YeelightDevice` — persistent JSON-RPC-over-TCP connection to one bulb, typed setters (`setPower`, `setRGB`, `setHSV`, `setCT`, `setBright`, `updateState`), event emitter, pending-message map keyed by JSON-RPC `id`. |
-| `SSDPClient.swift` | `SSDPClient` + `SSDPMessage`. Multicast `M-SEARCH` for `wifi_bulb` on `239.255.255.250:1982` via `NWConnectionGroup`. Uses a private `SSDPActor` to serialize receive state and avoid Swift 6 concurrency warnings. |
-| `Lookup.swift` | `YeelightLookup` — periodic SSDP discovery (60s interval, matches upstream) + opt-in `findByPortscanning()` fallback that walks every `/24` of every non-internal IPv4 interface and probes TCP 55443. Uses `LocalNetwork.ipv4Addresses()` (`getifaddrs`). |
-| `ColorMath.swift` | `RGB` / `HSV` value types, wire-format conversions (`rgbToInt` / `intToRGB`), RGB↔HSV, `ColorTemp.toRGB(kelvin:)` (Tanner Helland approximation, replaces the `color-temp` npm package). |
+### Source files (under `Sources/YeelightWiFi/`)
 
-**Two executables** demonstrate the library:
-- `Examples/main.swift` — direct port of `examples/example.js`. Discovers bulbs, toggles brightness every second, refreshes state every 10s.
-- `TestOff/main.swift` — manual integration test for the `off(_:id:)` event-listener removal path. Not wired into `swift test`.
+- **`YeelightWiFi.swift`** — Public façade. Only file a downstream consumer is *required* to look at to know the typealiases.
+- **`Yeelight.swift`** — `YeelightDevice`. Owns a single `NWConnection` to one bulb, maintains the JSON-RPC request/response state machine, the cached `power`/`rgb`/`hsb`/`bright` state, and the listener registry. The state mutators (`updateByRGB`, `updateCT`, `updateHSV`, `updateBright`, `updatePower`) are the **single emit point for `stateUpdate`** — both the public setters and the `parseResponse` path flow through them, which is how cached state stays consistent with the bulb.
+- **`Lookup.swift`** — `YeelightLookup`. Owns one `SSDPClient` and a periodic `Task` that calls `lookup()` every `YeelightLookup.lookupInterval` (60 s). `findByPortscanning()` is the slow `/24` walk fallback when SSDP is blocked. Uses `LocalNetwork.ipv4Addresses()` (raw `getifaddrs`) to enumerate interfaces.
+- **`SSDPClient.swift`** — `SSDPClient` + private `SSDPActor`. M-SEARCHes `wifi_bulb` on `239.255.255.250:1982` via `NWConnectionGroup` (a plain `NWConnection` would send unicast and never reach the bulb). The `SSDPActor` actor serializes the response list and the `ready`/`finished` lifetime flags — it exists specifically to avoid Swift 6 "concurrent access to captured `var`" warnings that `NSLock` from `NWConnectionGroup` callbacks would otherwise hit.
+- **`ColorMath.swift`** — `RGB`, `HSV`, `rgbToInt`/`intToRGB`, `rgbToHSV`/`hsvToRGB`, and `ColorTemp.toRGB(kelvin:)` (Tanner Helland approximation). The CT input is clamped to 1700–6500 K to match the bulb's accepted range and the upstream behavior.
+- **`YeelightEvents.swift`** — `YeelightEvent` enum (string-backed), the three handler typealiases (`LightHandler`, `DetectedHandler`, `EventHandler`), the three event-payload structs (`FailedEvent`, `TimeoutEvent`, `SuccessEvent`), and `YeelightError`. `TimeoutEvent`/`SuccessEvent` use `[Any]` for `params` on purpose — the upstream library preserves the exact JSON value passed in (string/int/dict depending on command).
 
-### Key invariants
+### Wire protocol
 
-- **Frame splitting** (`Yeelight.swift:drainFrames`) splits incoming bytes on `\r\n`, matching the JS upstream's behavior. Don't change to `NWConnection.receiveMessage` without re-validating against a real bulb.
-- **JSON-RPC pending messages** (`Yeelight.swift:sendCommand`) — every command gets a `DispatchWorkItem` timer (`requestTimeout: 5s`); on expiry the pending entry is removed, a `timeout` event fires, and the `CheckedContinuation` rejects with `YeelightError.timeout(id:)`. Cancellation must be paired carefully with the timer.
-- **SetHSV concurrency** (`Yeelight.swift:setHSV`) — the upstream library fires `set_hsv` and `set_bright` in parallel; the Swift port awaits them sequentially. Preserve the dual-command shape even though it's serialized.
-- **`mac` field is always empty** (`Yeelight.swift:mac`) — `node-arp` has no portable Foundation equivalent. Don't add a `getifaddrs`-based MAC scraper; the upstream README already notes MAC is "not guaranteed".
-- **Event emitter thread-safety** — both `YeelightDevice` and `YeelightLookup` guard the listener map with an `NSLock` and dispatch handlers on `DispatchQueue.global(qos: .userInitiated)`. Don't replace the lock with `@MainActor` isolation; it changes the contract documented in the README.
-- **`off(_:id:)` uses UUIDs**, `off(_:handler:)` uses `ObjectIdentifier`. The latter only works for handlers registered through the `EventHandler` overload — the `YeelightEvent`-typed `on` wraps the handler in a new closure and breaks identity comparison.
-- **Discovery cadence** — `YeelightLookup` kicks off a SSDP search on `init` and again every 60s in a long-running `Task`. Constructing a `Lookup` from a test or script will start the network loop immediately; cancel the task by dropping the reference or calling `deinit`.
-- **Port-scan timeout** (`Lookup.swift:portScanTimeout = 10s`) is per-IP. A scan of a `/24` is 254 × 10s worst case; the work is fan-outed via a `TaskGroup`, not serialized.
+Bulb control is JSON-RPC over TCP port **55443**, one request per line, `\r\n`-terminated. Responses are also `\r\n`-terminated frames. The set of allowed methods is gated by the bulb's `support` header (parsed in `updateBySSDPMessage`); `sendCommand` rejects with `.methodNotSupported` if the method isn't in `support`. Requests that don't get a response within `YeelightDevice.requestTimeout` (5 s) reject with `.timeout(id:)`.
 
-## GitNexus
+There are two response shapes:
+- **Notifications** (`method == "props"`) — bulb-initiated state push, handled in `parseResponse` and converted to state updates.
+- **Command responses** — resolved by the in-flight `PendingMessage` keyed on `id`; the continuation is resumed in `parseResponse`, or rejected by the timeout `DispatchWorkItem`.
 
-The repo is indexed by GitNexus (36 symbols, 29 relationships). Always check before editing:
+### Concurrency model
 
-- **MUST run `gitnexus_impact`** on any symbol before modifying it; report the blast radius (direct callers, affected processes, risk level) to the user. HIGH/CRITICAL → warn before proceeding.
-- **MUST run `gitnexus_detect_changes()`** before committing.
-- Use `gitnexus_query` and `gitnexus_context` for navigation instead of grepping.
-- Use `gitnexus_rename` for any symbol rename; never find-and-replace.
-- If the index is stale, run `npx gitnexus analyze` first.
+- `YeelightDevice` and `YeelightLookup` are `@unchecked Sendable` with internal `NSLock` for the listener registry.
+- `NWConnection` callbacks land on a `userInitiated` global queue. The receive loop accumulates bytes in `receiveBuffer` and `drainFrames()` splits on `\r\n`.
+- Outbound `sendCommand` wraps a `withCheckedThrowingContinuation` around a `DispatchWorkItem` timeout — there is no per-request `Task`; the continuation is held by the `PendingMessage` until the matching response arrives.
+- `SSDPClient` uses a private actor (`SSDPActor`) instead of `NSLock` because `NWConnectionGroup` callbacks are easier to bridge through actor `Task`s.
+- `Lookup.findByPortscanning` uses a `withTaskGroup` fan-out (one task per `/24` host) and touches `lights` from `MainActor.run` to keep mutation serialized.
 
-CLI/skill references: `.claude/skills/gitnexus/`. Resource list: `gitnexus://repo/yeelight-station-macos/...`.
+## Things to know that aren't obvious
+
+- The Node.js library uses `node-arp` to fill in MAC addresses; there is no portable Foundation equivalent, so `YeelightDevice.mac` is **always `""`** in this port. Don't try to fix that — the upstream README already notes MAC is "not guaranteed."
+- The `YeelightDevice` init has two paths: `init(ssdpMessage:)` (the SSDP-discovered path, which immediately calls `connect()`) and `initialize(host:port:mac:)` (the port-scan path, which spawns a `Task` to call `updateState()` after connecting). Mirror this asymmetry when adding new construction sites.
+- `setHSV` sends `set_hsv` and `set_bright` as **two sequential** commands — the comment in `Yeelight.swift` notes the JS implementation fires them concurrently, but the Swift port awaits them in sequence. Don't parallelize this without testing — the bulb's `props` notification race against the second `set_bright` response can otherwise leave cached `bright` stale.
+- The `on(_ event: YeelightEvent, handler: LightHandler)` overload wraps the typed handler in a fresh closure, so the `off(_:handler:)` path (which uses `ObjectIdentifier` on the closure) **cannot** remove handlers registered through the typed overload. Direct users of the string-typed `on(_:handler:)` (returning a `UUID` token) and call `off(_:id:)` to remove them — this asymmetry is exercised by `TestOff/main.swift`.
+- Many call sites log to `NSLog` at high frequency (every SSDP response, every `lookup()` tick). This is intentional in this codebase to aid LAN debugging; don't strip it without asking.
+- `Package.swift` lists the library path as `Sources/YeelightWiFi` and the executables as `Examples` and `TestOff`. When adding files, follow the existing per-class layout — don't group all types into one file.
