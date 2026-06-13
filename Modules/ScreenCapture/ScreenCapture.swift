@@ -82,53 +82,52 @@ public struct CapturedFrame: Equatable, Sendable {
     }
 
     public func averageColor(sampleStride: Int = 8) -> ScreenRGB {
-        guard pixelFormat == .bgra8PremultipliedFirst,
-              width > 0,
-              height > 0,
-              bytesPerRow > 0,
-              !bytes.isEmpty
-        else {
-            return ScreenRGB(r: 0, g: 0, b: 0)
-        }
-
-        let stride = max(1, sampleStride)
-        var redTotal: UInt64 = 0
-        var greenTotal: UInt64 = 0
-        var blueTotal: UInt64 = 0
-        var samples: UInt64 = 0
-
-        var y = 0
-        while y < height {
-            let rowStart = y * bytesPerRow
-            var x = 0
-
-            while x < width {
-                let offset = rowStart + (x * 4)
-                if offset + 2 < bytes.count {
-                    blueTotal += UInt64(bytes[offset])
-                    greenTotal += UInt64(bytes[offset + 1])
-                    redTotal += UInt64(bytes[offset + 2])
-                    samples += 1
-                }
-                x += stride
-            }
-
-            y += stride
-        }
-
-        guard samples > 0 else {
-            return ScreenRGB(r: 0, g: 0, b: 0)
-        }
-
-        return ScreenRGB(
-            r: roundedUInt8(redTotal, samples),
-            g: roundedUInt8(greenTotal, samples),
-            b: roundedUInt8(blueTotal, samples)
+        ScreenCapture.averageColor(
+            in: bytes,
+            width: width,
+            height: height,
+            bytesPerRow: bytesPerRow,
+            pixelFormat: pixelFormat,
+            sampleStride: sampleStride
         )
     }
+}
 
-    private func roundedUInt8(_ total: UInt64, _ count: UInt64) -> UInt8 {
-        UInt8(clamping: Int((Double(total) / Double(count)).rounded()))
+internal struct ScreenCaptureBuffer: Sendable {
+    internal private(set) var bytes: [UInt8] = []
+    internal private(set) var width: Int = 0
+    internal private(set) var height: Int = 0
+    internal private(set) var bytesPerRow: Int = 0
+
+    mutating func prepare(width: Int, height: Int) throws {
+        guard width > 0, height > 0 else {
+            throw ScreenCaptureError.unsupportedPixelFormat("zero-sized image")
+        }
+
+        let bytesPerPixel = 4
+        let bytesPerRowResult = width.multipliedReportingOverflow(by: bytesPerPixel)
+        guard !bytesPerRowResult.overflow else {
+            throw ScreenCaptureError.unsupportedPixelFormat("BGRA8 byte row overflow")
+        }
+
+        let byteCountResult = bytesPerRowResult.partialValue.multipliedReportingOverflow(by: height)
+        guard !byteCountResult.overflow else {
+            throw ScreenCaptureError.unsupportedPixelFormat("BGRA8 byte count overflow")
+        }
+
+        self.width = width
+        self.height = height
+        self.bytesPerRow = bytesPerRowResult.partialValue
+
+        if bytes.count != byteCountResult.partialValue {
+            bytes = [UInt8](repeating: 0, count: byteCountResult.partialValue)
+        }
+    }
+
+    mutating func withUnsafeMutableBytes<R>(
+        _ body: (UnsafeMutableRawBufferPointer) throws -> R
+    ) rethrows -> R {
+        try bytes.withUnsafeMutableBytes(body)
     }
 }
 
@@ -207,6 +206,65 @@ public enum ScreenCapture {
     }
 }
 
+public final class ScreenCaptureSession: @unchecked Sendable {
+    public let display: ScreenDisplay
+
+    private let colorSpace: CGColorSpace
+    private var buffer = ScreenCaptureBuffer()
+
+    public init(screen: Int = 0) async throws {
+        let displays = try await ScreenCapture.listDisplays()
+        let display = try ScreenCapture.display(at: screen, in: displays)
+
+        guard ScreenCapture.preflightPermission() else {
+            throw ScreenCaptureError.permissionDenied
+        }
+
+        guard let colorSpace = ScreenCapture.makeRGBColorSpace() else {
+            throw ScreenCaptureError.unsupportedPixelFormat("missing RGB color space")
+        }
+
+        self.display = display
+        self.colorSpace = colorSpace
+    }
+
+    public func captureFrame() throws -> CapturedFrame {
+        let image = try captureImage()
+        try ScreenCapture.draw(image, into: &buffer, colorSpace: colorSpace)
+
+        return CapturedFrame(
+            display: display,
+            width: buffer.width,
+            height: buffer.height,
+            bytesPerRow: buffer.bytesPerRow,
+            pixelFormat: .bgra8PremultipliedFirst,
+            capturedAt: Date(),
+            bytes: buffer.bytes
+        )
+    }
+
+    public func averageColor(sampleStride: Int = 8) throws -> ScreenRGB {
+        let image = try captureImage()
+        try ScreenCapture.draw(image, into: &buffer, colorSpace: colorSpace)
+
+        return ScreenCapture.averageColor(
+            in: buffer.bytes,
+            width: buffer.width,
+            height: buffer.height,
+            bytesPerRow: buffer.bytesPerRow,
+            pixelFormat: .bgra8PremultipliedFirst,
+            sampleStride: sampleStride
+        )
+    }
+
+    private func captureImage() throws -> CGImage {
+        guard let image = CGDisplayCreateImage(display.cgDirectDisplayID) else {
+            throw ScreenCaptureError.captureFailed(display.cgDirectDisplayID)
+        }
+        return image
+    }
+}
+
 extension ScreenCapture {
     @MainActor
     internal static func currentDisplays() throws -> [ScreenDisplay] {
@@ -275,22 +333,45 @@ extension ScreenCapture {
     }
 
     internal static func frame(from image: CGImage, display: ScreenDisplay) throws -> CapturedFrame {
-        let width = image.width
-        let height = image.height
-        let bytesPerPixel = 4
-        let bitsPerComponent = 8
-        let bytesPerRow = width * bytesPerPixel
-        var bytes = [UInt8](repeating: 0, count: bytesPerRow * height)
-
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpace(name: CGColorSpace.displayP3) else {
+        guard let colorSpace = makeRGBColorSpace() else {
             throw ScreenCaptureError.unsupportedPixelFormat("missing RGB color space")
         }
 
+        var buffer = ScreenCaptureBuffer()
+        try draw(image, into: &buffer, colorSpace: colorSpace)
+
+        return CapturedFrame(
+            display: display,
+            width: buffer.width,
+            height: buffer.height,
+            bytesPerRow: buffer.bytesPerRow,
+            pixelFormat: .bgra8PremultipliedFirst,
+            capturedAt: Date(),
+            bytes: buffer.bytes
+        )
+    }
+
+    internal static func makeRGBColorSpace() -> CGColorSpace? {
+        CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpace(name: CGColorSpace.displayP3)
+    }
+
+    internal static func draw(
+        _ image: CGImage,
+        into buffer: inout ScreenCaptureBuffer,
+        colorSpace: CGColorSpace
+    ) throws {
+        try buffer.prepare(width: image.width, height: image.height)
+
+        let bitsPerComponent = 8
         let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue
             | CGImageAlphaInfo.premultipliedFirst.rawValue
 
-        let drewImage = bytes.withUnsafeMutableBytes { buffer in
-            guard let baseAddress = buffer.baseAddress,
+        let width = buffer.width
+        let height = buffer.height
+        let bytesPerRow = buffer.bytesPerRow
+
+        let drewImage = buffer.withUnsafeMutableBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress,
                   let context = CGContext(
                       data: baseAddress,
                       width: width,
@@ -311,16 +392,63 @@ extension ScreenCapture {
         guard drewImage else {
             throw ScreenCaptureError.unsupportedPixelFormat("BGRA8 premultiplied-first")
         }
+    }
 
-        return CapturedFrame(
-            display: display,
-            width: width,
-            height: height,
-            bytesPerRow: bytesPerRow,
-            pixelFormat: .bgra8PremultipliedFirst,
-            capturedAt: Date(),
-            bytes: bytes
+    internal static func averageColor(
+        in bytes: [UInt8],
+        width: Int,
+        height: Int,
+        bytesPerRow: Int,
+        pixelFormat: ScreenPixelFormat,
+        sampleStride: Int = 8
+    ) -> ScreenRGB {
+        guard pixelFormat == .bgra8PremultipliedFirst,
+              width > 0,
+              height > 0,
+              bytesPerRow > 0,
+              !bytes.isEmpty
+        else {
+            return ScreenRGB(r: 0, g: 0, b: 0)
+        }
+
+        let stride = max(1, sampleStride)
+        var redTotal: UInt64 = 0
+        var greenTotal: UInt64 = 0
+        var blueTotal: UInt64 = 0
+        var samples: UInt64 = 0
+
+        var y = 0
+        while y < height {
+            let rowStart = y * bytesPerRow
+            var x = 0
+
+            while x < width {
+                let offset = rowStart + (x * 4)
+                if offset + 2 < bytes.count {
+                    blueTotal += UInt64(bytes[offset])
+                    greenTotal += UInt64(bytes[offset + 1])
+                    redTotal += UInt64(bytes[offset + 2])
+                    samples += 1
+                }
+                x += stride
+            }
+
+            y += stride
+        }
+
+        guard samples > 0 else {
+            return ScreenRGB(r: 0, g: 0, b: 0)
+        }
+
+        return ScreenRGB(
+            r: roundedUInt8(redTotal, samples),
+            g: roundedUInt8(greenTotal, samples),
+            b: roundedUInt8(blueTotal, samples)
         )
+    }
+
+    private static func roundedUInt8(_ total: UInt64, _ count: UInt64) -> UInt8 {
+        UInt8(clamping: Int((Double(total) / Double(count)).rounded()))
     }
 
     @MainActor

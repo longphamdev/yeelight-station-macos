@@ -612,8 +612,9 @@ public final class YeelightDevice: @unchecked Sendable {
         let handlers = listeners[event] ?? []
         listenersLock.unlock()
         for listener in handlers {
+            let delivery = AsyncEventDelivery(handler: listener.handler, payload: payload)
             DispatchQueue.global(qos: .userInitiated).async {
-                listener.handler(payload)
+                delivery.call()
             }
         }
     }

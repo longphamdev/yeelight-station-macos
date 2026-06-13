@@ -44,15 +44,17 @@ public enum YeelightCommandEncoder {
     }
 
     public static func setRGBLine(id: Int, color: RGB, duration: Int = 0) throws -> Data {
-        try commandLine(
-            id: id,
-            method: "set_rgb",
-            params: [
-                rgbToInt(color),
-                duration > 0 ? "smooth" : "sudden",
-                duration > 0 ? duration : 0
-            ]
-        )
+        try setRGBLine(id: id, rgbValue: rgbToInt(color), duration: duration)
+    }
+
+    static func setRGBLine(id: Int, rgbValue: Int, duration: Int = 0) throws -> Data {
+        let effect = duration > 0 ? "smooth" : "sudden"
+        let effectiveDuration = duration > 0 ? duration : 0
+        let line = "{\"id\":\(id),\"method\":\"set_rgb\",\"params\":[\(rgbValue),\"\(effect)\",\(effectiveDuration)]}\r\n"
+        guard let bytes = line.data(using: .utf8) else {
+            throw YeelightError.socketError("failed to encode request")
+        }
+        return bytes
     }
 }
 
@@ -156,15 +158,19 @@ public final class YeelightMusicModeSession: @unchecked Sendable {
         return session
     }
 
-    public func sendRGB(_ color: RGB, duration: Int = 0) async throws {
-        let id = nextMessageId()
-        let bytes = try YeelightCommandEncoder.setRGBLine(id: id, color: color, duration: duration)
+    public func sendRGB(_ color: RGB, duration: Int = 0, updatesCachedState: Bool = true) async throws {
         let conn = currentConnection()
         guard let conn else {
             throw YeelightMusicModeError.notStarted
         }
 
-        device.updateByRGB("\(rgbToInt(color))")
+        let id = nextMessageId()
+        let rgbValue = rgbToInt(color)
+        let bytes = try YeelightCommandEncoder.setRGBLine(id: id, rgbValue: rgbValue, duration: duration)
+        if updatesCachedState {
+            device.updateByRGB("\(rgbValue)")
+        }
+
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             conn.send(content: bytes, completion: .contentProcessed { error in
                 if let error {

@@ -78,6 +78,10 @@ try await session.sendRGB(RGB(r: 10, g: 20, b: 30))
 await session.stop()
 ```
 
+High-frequency callers that do not read the cached `YeelightDevice` state during
+streaming can pass `updatesCachedState: false` to reduce event and conversion
+overhead.
+
 `setMusic(enabled:host:port:)` wraps Yeelight's `set_music` command:
 
 ```swift

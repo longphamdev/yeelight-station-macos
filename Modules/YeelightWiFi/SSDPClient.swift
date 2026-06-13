@@ -148,7 +148,10 @@ public final class SSDPClient: @unchecked Sendable {
         group.start(queue: DispatchQueue.global(qos: .userInitiated))
 
         // Fire the M-SEARCH once the socket is ready.
-        await actor.waitForReady()
+        guard await actor.waitForReady(timeout: options.timeout) else {
+            group.cancel()
+            return []
+        }
         let payload = Self.msearchPayload(mx: options.mx, st: options.searchTarget)
         if let data = payload.data(using: .utf8) {
             group.send(content: data) { error in
@@ -158,12 +161,11 @@ public final class SSDPClient: @unchecked Sendable {
             }
         }
 
-        // Read responses until the timeout fires. We poll for
-        // completion because NWConnectionGroup uses a single
-        // receive handler instead of per-message callbacks.
-        let deadline = Date().addingTimeInterval(options.timeout)
-        while !Task.isCancelled, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 100_000_000) // 100 ms
+        // Read responses until the timeout fires. NWConnectionGroup
+        // delivers messages through the receive handler above.
+        let responseDelay = Self.timeoutNanoseconds(for: options.timeout)
+        if responseDelay > 0 {
+            try? await Task.sleep(nanoseconds: responseDelay)
         }
         let messages = await actor.snapshot()
         group.cancel()
@@ -183,41 +185,61 @@ public final class SSDPClient: @unchecked Sendable {
 
         """
     }
+
+    private static func timeoutNanoseconds(for timeout: TimeInterval) -> UInt64 {
+        guard timeout.isFinite, timeout > 0 else {
+            return 0
+        }
+        let nanoseconds = (timeout * 1_000_000_000).rounded()
+        guard nanoseconds < Double(UInt64.max) else {
+            return UInt64.max
+        }
+        return UInt64(nanoseconds)
+    }
 }
 
 // MARK: - SSDPActor
+
+private enum SSDPReadiness {
+    case pending
+    case ready
+    case failed
+}
 
 /// Small actor that owns the receive state for an SSDP search. It
 /// serializes the result set and the lifetime flag, which avoids the
 /// "concurrent access to captured `var`" Swift 6 warnings we'd
 /// otherwise hit when using `NSLock` from `stateUpdateHandler` or
 /// `receive` callbacks.
-private actor SSDPActor {
+actor SSDPActor {
     private var messages: [SSDPMessage] = []
     private var seenIds: Set<String> = []
-    private var ready: Bool = false
-    private var finished: Bool = false
+    private var readiness: SSDPReadiness = .pending
 
-    func waitForReady() async {
-        while !ready {
+    func waitForReady(timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        while readiness == .pending {
+            if Date() >= deadline {
+                readiness = .failed
+                break
+            }
             try? await Task.sleep(nanoseconds: 10_000_000) // 10 ms
         }
+        return readiness == .ready
     }
 
     func markReady() {
-        ready = true
+        guard readiness == .pending else {
+            return
+        }
+        readiness = .ready
     }
 
     func fail() {
-        finished = true
-    }
-
-    func markFinished() {
-        finished = true
-    }
-
-    func isFinished() -> Bool {
-        return finished
+        guard readiness == .pending else {
+            return
+        }
+        readiness = .failed
     }
 
     func ingest(text: String) {

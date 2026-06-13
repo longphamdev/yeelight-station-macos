@@ -172,6 +172,30 @@ public enum DeviceSelector {
     }
 }
 
+public enum FramePacer {
+    public static func frameDelayNanoseconds(fps: Double) -> UInt64 {
+        let nanoseconds = (1_000_000_000 / fps).rounded()
+        guard nanoseconds.isFinite, nanoseconds > 0 else {
+            return 1
+        }
+        return max(1, UInt64(nanoseconds))
+    }
+
+    public static func elapsedNanoseconds(since start: UInt64, now: UInt64) -> UInt64 {
+        guard now >= start else {
+            return 0
+        }
+        return now - start
+    }
+
+    public static func remainingDelayNanoseconds(frameDelay: UInt64, elapsed: UInt64) -> UInt64 {
+        guard elapsed < frameDelay else {
+            return 0
+        }
+        return frameDelay - elapsed
+    }
+}
+
 public func yeelightRGB(from color: ScreenRGB) -> RGB {
     RGB(r: color.r, g: color.g, b: color.b)
 }

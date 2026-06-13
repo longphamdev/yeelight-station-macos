@@ -40,6 +40,20 @@ public typealias DetectedHandler = (YeelightDevice) -> Void
 /// enums below).
 public typealias EventHandler = (Any) -> Void
 
+internal final class AsyncEventDelivery: @unchecked Sendable {
+    private let handler: EventHandler
+    private let payload: Any
+
+    init(handler: @escaping EventHandler, payload: Any) {
+        self.handler = handler
+        self.payload = payload
+    }
+
+    func call() {
+        handler(payload)
+    }
+}
+
 // MARK: - Event payloads
 
 /// Payload for the `failed` event.

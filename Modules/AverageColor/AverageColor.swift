@@ -86,19 +86,28 @@ public enum AverageColor {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
 
-        guard let context = CGContext(
-            data: &pixels,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRowResult.partialValue,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo
-        ) else {
-            throw AverageColorError.unsupportedBitmapConversion
+        let drewImage = pixels.withUnsafeMutableBytes { buffer in
+            guard let baseAddress = buffer.baseAddress,
+                  let context = CGContext(
+                      data: baseAddress,
+                      width: width,
+                      height: height,
+                      bitsPerComponent: 8,
+                      bytesPerRow: bytesPerRowResult.partialValue,
+                      space: colorSpace,
+                      bitmapInfo: bitmapInfo
+                  )
+            else {
+                return false
+            }
+
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
         }
 
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard drewImage else {
+            throw AverageColorError.unsupportedBitmapConversion
+        }
 
         return averageRGBA(in: pixels, pixelCount: width * height)
     }

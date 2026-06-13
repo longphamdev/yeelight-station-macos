@@ -49,6 +49,29 @@ final class ScreenCaptureTests: XCTestCase {
         XCTAssertEqual(frame.averageColor(sampleStride: 2), ScreenRGB(r: 20, g: 4, b: 3))
     }
 
+    func testReusableBufferKeepsStorageForSameDimensions() throws {
+        var buffer = ScreenCaptureBuffer()
+
+        try buffer.prepare(width: 2, height: 2)
+        let firstAddress = try XCTUnwrap(buffer.bytes.withUnsafeBufferPointer { pointer in
+            pointer.baseAddress.map { UInt(bitPattern: $0) }
+        })
+
+        try buffer.prepare(width: 2, height: 2)
+        let secondAddress = try XCTUnwrap(buffer.bytes.withUnsafeBufferPointer { pointer in
+            pointer.baseAddress.map { UInt(bitPattern: $0) }
+        })
+
+        XCTAssertEqual(buffer.bytes.count, 16)
+        XCTAssertEqual(buffer.bytesPerRow, 8)
+        XCTAssertEqual(firstAddress, secondAddress)
+
+        try buffer.prepare(width: 3, height: 1)
+
+        XCTAssertEqual(buffer.bytes.count, 12)
+        XCTAssertEqual(buffer.bytesPerRow, 12)
+    }
+
     func testDisplayOrderingMovesMainDisplayFirstAndReindexes() {
         let snapshots = [
             DisplaySnapshot(

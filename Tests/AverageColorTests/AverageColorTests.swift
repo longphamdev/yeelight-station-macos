@@ -53,23 +53,27 @@ final class AverageColorTests: XCTestCase {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
 
-        guard let context = CGContext(
-            data: &mutablePixels,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo
-        ) else {
-            throw TestError.imageCreationFailed
-        }
+        return try mutablePixels.withUnsafeMutableBytes { buffer in
+            guard let baseAddress = buffer.baseAddress,
+                  let context = CGContext(
+                      data: baseAddress,
+                      width: width,
+                      height: height,
+                      bitsPerComponent: 8,
+                      bytesPerRow: width * 4,
+                      space: colorSpace,
+                      bitmapInfo: bitmapInfo
+                  )
+            else {
+                throw TestError.imageCreationFailed
+            }
 
-        guard let image = context.makeImage() else {
-            throw TestError.imageCreationFailed
-        }
+            guard let image = context.makeImage() else {
+                throw TestError.imageCreationFailed
+            }
 
-        return image
+            return image
+        }
     }
 
     private func pngData(from image: CGImage) throws -> Data {

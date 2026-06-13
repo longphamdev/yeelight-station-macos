@@ -47,6 +47,28 @@ final class CLIOptionsTests: XCTestCase {
         XCTAssertEqual(color, RGB(r: 9, g: 10, b: 11))
     }
 
+    func testFramePacerUsesRequestedFPS() {
+        XCTAssertEqual(FramePacer.frameDelayNanoseconds(fps: 10), 100_000_000)
+        XCTAssertEqual(FramePacer.frameDelayNanoseconds(fps: 12.5), 80_000_000)
+    }
+
+    func testFramePacerSubtractsElapsedWorkTime() {
+        let frameDelay = FramePacer.frameDelayNanoseconds(fps: 10)
+
+        XCTAssertEqual(
+            FramePacer.remainingDelayNanoseconds(frameDelay: frameDelay, elapsed: 25_000_000),
+            75_000_000
+        )
+        XCTAssertEqual(
+            FramePacer.remainingDelayNanoseconds(frameDelay: frameDelay, elapsed: 100_000_000),
+            0
+        )
+        XCTAssertEqual(
+            FramePacer.elapsedNanoseconds(since: 500, now: 400),
+            0
+        )
+    }
+
     func testDeviceSelectionRejectsMissingIDs() {
         let device = YeelightDevice()
         device.id = "known"

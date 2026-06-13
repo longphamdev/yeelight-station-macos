@@ -43,11 +43,9 @@ public enum LocalNetwork {
             let family = interface.ifa_addr.pointee.sa_family
             guard family == UInt8(AF_INET) else { continue }
 
-            let name = String(cString: interface.ifa_name)
             let flags = Int32(interface.ifa_flags)
             // Skip loopback and interfaces that are down.
             if (flags & IFF_LOOPBACK) != 0 || (flags & IFF_UP) == 0 { continue }
-            _ = name
 
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             let result = getnameinfo(
@@ -58,13 +56,19 @@ public enum LocalNetwork {
                 nil, 0, NI_NUMERICHOST
             )
             if result == 0 {
-                let address = String(cString: host)
+                let address = string(fromNullTerminatedCString: host)
                 if !address.isEmpty, address != "127.0.0.1" {
                     addresses.append(address)
                 }
             }
         }
         return Array(Set(addresses))
+    }
+
+    private static func string(fromNullTerminatedCString bytes: [CChar]) -> String {
+        let endIndex = bytes.firstIndex(of: 0) ?? bytes.endIndex
+        let codeUnits = bytes[..<endIndex].map { UInt8(bitPattern: $0) }
+        return String(decoding: codeUnits, as: UTF8.self)
     }
 }
 
@@ -233,8 +237,9 @@ public final class YeelightLookup: @unchecked Sendable {
         let handlers = listeners[event] ?? []
         listenersLock.unlock()
         for handler in handlers {
+            let delivery = AsyncEventDelivery(handler: handler, payload: payload)
             DispatchQueue.global(qos: .userInitiated).async {
-                handler(payload)
+                delivery.call()
             }
         }
     }

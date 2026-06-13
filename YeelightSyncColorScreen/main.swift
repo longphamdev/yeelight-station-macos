@@ -114,6 +114,7 @@ private actor SyncRuntime {
         }
 
         try await requestScreenCapturePermissionIfNeeded()
+        let captureSession = try await ScreenCaptureSession(screen: displayID)
 
         let devices = try await discoverDevices(timeout: options.discoveryTimeout)
         let selectedDevices = try DeviceSelector.select(from: devices, ids: options.deviceIDs)
@@ -123,43 +124,96 @@ private actor SyncRuntime {
         setSessions(activeSessions)
 
         print("Syncing display \(displayID) at \(options.fps) FPS. Press Ctrl-C to stop.")
-        let frameDelay = UInt64((1_000_000_000 / options.fps).rounded())
+        let frameDelay = FramePacer.frameDelayNanoseconds(fps: options.fps)
         var lastColor: RGB?
 
         while !Task.isCancelled, !stopped {
-            let frame = try await ScreenCapture.capture(screen: displayID)
-            let color = yeelightRGB(from: frame.averageColor(sampleStride: options.sampleStride))
+            let frameStartedAt = DispatchTime.now().uptimeNanoseconds
+            let color = yeelightRGB(from: try captureSession.averageColor(sampleStride: options.sampleStride))
 
             if color != lastColor {
                 try await broadcast(color, to: activeSessions)
                 lastColor = color
             }
 
-            try await Task.sleep(nanoseconds: frameDelay)
+            let elapsed = FramePacer.elapsedNanoseconds(
+                since: frameStartedAt,
+                now: DispatchTime.now().uptimeNanoseconds
+            )
+            let remainingDelay = FramePacer.remainingDelayNanoseconds(
+                frameDelay: frameDelay,
+                elapsed: elapsed
+            )
+            if remainingDelay > 0 {
+                try await Task.sleep(nanoseconds: remainingDelay)
+            } else {
+                await Task.yield()
+            }
         }
     }
 
     private func startMusicSessions(for devices: [YeelightDevice]) async throws -> [YeelightMusicModeSession] {
-        var activeSessions: [YeelightMusicModeSession] = []
-        do {
-            for device in devices {
-                let session = try await YeelightMusicModeSession.start(device: device)
-                activeSessions.append(session)
+        try await withThrowingTaskGroup(of: (Int, YeelightMusicModeSession).self) { group in
+            for (index, device) in devices.enumerated() {
+                group.addTask {
+                    (index, try await YeelightMusicModeSession.start(device: device))
+                }
             }
-            return activeSessions
-        } catch {
-            for session in activeSessions {
-                await session.stop()
+
+            var activeSessions: [YeelightMusicModeSession] = []
+            var orderedSessions = Array<YeelightMusicModeSession?>(repeating: nil, count: devices.count)
+            var caughtError: Error?
+
+            while caughtError == nil {
+                do {
+                    guard let (index, session) = try await group.next() else {
+                        break
+                    }
+                    activeSessions.append(session)
+                    orderedSessions[index] = session
+                } catch {
+                    caughtError = error
+                    group.cancelAll()
+                }
             }
-            throw error
+
+            if let caughtError {
+                while true {
+                    do {
+                        guard let (_, session) = try await group.next() else {
+                            break
+                        }
+                        activeSessions.append(session)
+                    } catch {
+                        continue
+                    }
+                }
+
+                for session in activeSessions {
+                    await session.stop()
+                }
+                throw caughtError
+            }
+
+            return orderedSessions.compactMap { $0 }
         }
     }
 
     private func broadcast(_ color: RGB, to sessions: [YeelightMusicModeSession]) async throws {
+        switch sessions.count {
+        case 0:
+            return
+        case 1:
+            try await sessions[0].sendRGB(color, updatesCachedState: false)
+            return
+        default:
+            break
+        }
+
         try await withThrowingTaskGroup(of: Void.self) { group in
             for session in sessions {
                 group.addTask {
-                    try await session.sendRGB(color)
+                    try await session.sendRGB(color, updatesCachedState: false)
                 }
             }
             try await group.waitForAll()
