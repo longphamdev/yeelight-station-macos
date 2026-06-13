@@ -98,7 +98,6 @@ public final class YeelightDevice: @unchecked Sendable {
     public init(ssdpMessage: SSDPMessage? = nil) {
         if let message = ssdpMessage {
             updateBySSDPMessage(message)
-            NSLog("Yeelight init: id=\(id) host=\(host) port=\(port) type=\(type.rawValue)")
             connect()
         }
     }
@@ -135,14 +134,13 @@ public final class YeelightDevice: @unchecked Sendable {
         model = message.model
         firmware = message.firmware
         support = message.support
-        NSLog("updateBySSDPMessage: id=\(message.id) loc=\(message.location) support=\(message.support.prefix(20))")
 
         // Extract host and port from `LOCATION: //host:port/...`
         if let parsed = Self.parseLocation(message.location) {
             host = parsed.host
             port = parsed.port
         } else {
-            NSLog("updateBySSDPMessage: parseLocation failed for \(message.location)")
+            NSLog("Yeelight location parse failed for \(message.location)")
         }
 
         // Type detection.
@@ -509,9 +507,10 @@ public final class YeelightDevice: @unchecked Sendable {
 
     @discardableResult
     public func sendCommand(method: String, params: [Any]) async throws -> YeelightDevice {
-        if !isConnected {
+        if connection == nil {
             connect()
         }
+        try await waitUntilConnected()
 
         var supportedMethods: [String] = []
         if !support.isEmpty {
@@ -525,17 +524,7 @@ public final class YeelightDevice: @unchecked Sendable {
         let id = messageId
         messageId += 1
 
-        let payload: [String: Any] = [
-            "id": id,
-            "method": method,
-            "params": params
-        ]
-        let json = try JSONSerialization.data(withJSONObject: payload, options: [])
-        var line = String(data: json, encoding: .utf8) ?? ""
-        line += "\r\n"
-        guard let bytes = line.data(using: .utf8) else {
-            throw YeelightError.socketError("failed to encode request")
-        }
+        let bytes = try YeelightCommandEncoder.commandLine(id: id, method: method, params: params)
 
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<YeelightDevice, Error>) in
             let workItem = DispatchWorkItem { [weak self] in
@@ -560,6 +549,19 @@ public final class YeelightDevice: @unchecked Sendable {
                     NSLog("Yeelight send error: \(error)")
                 }
             })
+        }
+    }
+
+    private func waitUntilConnected() async throws {
+        if isConnected { return }
+
+        let deadline = Date().addingTimeInterval(Self.socketTimeout)
+        while !isConnected, Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        guard isConnected else {
+            throw YeelightError.socketError("connection timed out")
         }
     }
 

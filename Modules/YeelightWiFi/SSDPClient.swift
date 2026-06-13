@@ -103,8 +103,6 @@ public final class SSDPClient: @unchecked Sendable {
         guard let port = NWEndpoint.Port(rawValue: options.port) else {
             return []
         }
-        NSLog("SSDP search: starting for \(options.host):\(port)")
-
         // Multicast UDP socket. NWConnectionGroup is the API that
         // actually joins the 239.255.255.250 group on macOS; a
         // plain NWConnection sends unicast and the SSDP M-SEARCH
@@ -127,12 +125,9 @@ public final class SSDPClient: @unchecked Sendable {
         )
 
         let actor = SSDPActor()
-        var didReceive = false
-
         group.stateUpdateHandler = { (state: NWConnectionGroup.State) in
             switch state {
             case .ready:
-                NSLog("SSDP group ready")
                 Task { await actor.markReady() }
             case .failed(let error):
                 NSLog("SSDP group failed: \(error)")
@@ -144,7 +139,6 @@ public final class SSDPClient: @unchecked Sendable {
 
         group.setReceiveHandler(maximumMessageSize: 65_536, rejectOversizedMessages: false) { (message: NWConnectionGroup.Message, content: Data?, isComplete: Bool) in
             if let data = content, !data.isEmpty {
-                didReceive = true
                 if let text = String(data: data, encoding: .utf8) {
                     Task { await actor.ingest(text: text) }
                 }
@@ -172,11 +166,6 @@ public final class SSDPClient: @unchecked Sendable {
             try? await Task.sleep(nanoseconds: 100_000_000) // 100 ms
         }
         let messages = await actor.snapshot()
-        NSLog("SSDP search finished: \(messages.count) unique responses, didReceive=\(didReceive)")
-        for m in messages {
-            NSLog("  msg id=\(m.id) loc=\(m.location) support=\(m.support.prefix(30))")
-        }
-        NSLog("SSDP search returning to caller")
         group.cancel()
         return messages
     }
@@ -233,7 +222,6 @@ private actor SSDPActor {
 
     func ingest(text: String) {
         let message = SSDPMessage(rawText: text)
-        NSLog("SSDP ingest: id=\(message.id) loc=\(message.location) support=\(message.support.prefix(40)) raw=\(text.prefix(200).replacingOccurrences(of: "\r\n", with: "\\r\\n").replacingOccurrences(of: "\n", with: "\\n"))")
         guard !message.id.isEmpty, !seenIds.contains(message.id) else { return }
         seenIds.insert(message.id)
         messages.append(message)

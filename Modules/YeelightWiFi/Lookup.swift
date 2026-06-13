@@ -102,15 +102,14 @@ public final class YeelightLookup: @unchecked Sendable {
 
     public init(
         ssdp: SSDPClient = SSDPClient(),
-        interval: TimeInterval = YeelightLookup.lookupInterval
+        interval: TimeInterval = YeelightLookup.lookupInterval,
+        autoStart: Bool = true
     ) {
         self.ssdp = ssdp
         self.interval = interval
-        NSLog("Lookup: init entered, scheduling task")
+        guard autoStart else { return }
         intervalTask = Task { [weak self] in
-            NSLog("Lookup: task started")
             await self?.lookup()
-            NSLog("Lookup: init sequence finished, lights=\(self?.lights.count ?? -1)")
             while !Task.isCancelled {
                 let delay = UInt64((self?.interval ?? 0) * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: delay)
@@ -129,28 +128,17 @@ public final class YeelightLookup: @unchecked Sendable {
     /// Perform a single SSDP search and update `lights` with anything
     /// new that comes back.
     public func lookup() async {
-        NSLog("Lookup: lookup() called, lights=\(lights.count)")
         let messages = await ssdp.search()
-        NSLog("Lookup: search returned \(messages.count) messages, current lights=\(lights.count)")
-        for message in messages {
-            NSLog("  msg: id=\(message.id) loc=\(message.location) support=\(message.support.prefix(30))")
-        }
-        NSLog("Lookup: starting merge, messages=\(messages.count)")
         for message in messages {
             guard !message.id.isEmpty else { continue }
             if let existing = lights.first(where: { $0.id == message.id }) {
                 existing.updateBySSDPMessage(message)
             } else {
-                NSLog("  creating YeelightDevice from message id=\(message.id) loc=\(message.location)")
                 let light = YeelightDevice(ssdpMessage: message)
-                NSLog("  after init: id=\(light.id) host=\(light.host) port=\(light.port) type=\(light.type.rawValue)")
                 lights.append(light)
-                NSLog("Lookup: detected new light id=\(light.id) host=\(light.host) port=\(light.port) lights=\(lights.count)")
                 emit(YeelightEvent.detected.rawValue, payload: light)
-                NSLog("Lookup: emit done, lights=\(lights.count)")
             }
         }
-        NSLog("Lookup: lookup() returning, lights=\(lights.count)")
     }
 
     /// Scan the local `/24` subnets of every non-internal interface
@@ -212,11 +200,9 @@ public final class YeelightLookup: @unchecked Sendable {
             conn.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    timeout.cancel()
                     probe.finish(result: true)
                     conn.cancel()
                 case .failed, .cancelled:
-                    timeout.cancel()
                     probe.finish(result: false)
                 default:
                     break
