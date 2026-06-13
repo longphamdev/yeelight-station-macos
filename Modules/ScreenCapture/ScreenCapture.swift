@@ -211,6 +211,7 @@ public final class ScreenCaptureSession: @unchecked Sendable {
 
     private let colorSpace: CGColorSpace
     private var buffer = ScreenCaptureBuffer()
+    private var colorBuffer = ScreenCaptureBuffer()
 
     public init(screen: Int = 0) async throws {
         let displays = try await ScreenCapture.listDisplays()
@@ -245,15 +246,26 @@ public final class ScreenCaptureSession: @unchecked Sendable {
 
     public func averageColor(sampleStride: Int = 8) throws -> ScreenRGB {
         let image = try captureImage()
-        try ScreenCapture.draw(image, into: &buffer, colorSpace: colorSpace)
+        let colorBufferSize = ScreenCapture.colorBufferSize(
+            width: image.width,
+            height: image.height,
+            sampleStride: sampleStride
+        )
+        try ScreenCapture.draw(
+            image,
+            into: &colorBuffer,
+            width: colorBufferSize.width,
+            height: colorBufferSize.height,
+            colorSpace: colorSpace
+        )
 
         return ScreenCapture.averageColor(
-            in: buffer.bytes,
-            width: buffer.width,
-            height: buffer.height,
-            bytesPerRow: buffer.bytesPerRow,
+            in: colorBuffer.bytes,
+            width: colorBuffer.width,
+            height: colorBuffer.height,
+            bytesPerRow: colorBuffer.bytesPerRow,
             pixelFormat: .bgra8PremultipliedFirst,
-            sampleStride: sampleStride
+            sampleStride: 1
         )
     }
 
@@ -360,7 +372,23 @@ extension ScreenCapture {
         into buffer: inout ScreenCaptureBuffer,
         colorSpace: CGColorSpace
     ) throws {
-        try buffer.prepare(width: image.width, height: image.height)
+        try draw(
+            image,
+            into: &buffer,
+            width: image.width,
+            height: image.height,
+            colorSpace: colorSpace
+        )
+    }
+
+    internal static func draw(
+        _ image: CGImage,
+        into buffer: inout ScreenCaptureBuffer,
+        width: Int,
+        height: Int,
+        colorSpace: CGColorSpace
+    ) throws {
+        try buffer.prepare(width: width, height: height)
 
         let bitsPerComponent = 8
         let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue
@@ -385,6 +413,7 @@ extension ScreenCapture {
                 return false
             }
 
+            context.interpolationQuality = .none
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }
@@ -392,6 +421,14 @@ extension ScreenCapture {
         guard drewImage else {
             throw ScreenCaptureError.unsupportedPixelFormat("BGRA8 premultiplied-first")
         }
+    }
+
+    internal static func colorBufferSize(width: Int, height: Int, sampleStride: Int) -> (width: Int, height: Int) {
+        let stride = max(1, sampleStride)
+        return (
+            width: max(1, (width + stride - 1) / stride),
+            height: max(1, (height + stride - 1) / stride)
+        )
     }
 
     internal static func averageColor(
@@ -412,10 +449,10 @@ extension ScreenCapture {
         }
 
         let stride = max(1, sampleStride)
-        var redTotal: UInt64 = 0
-        var greenTotal: UInt64 = 0
-        var blueTotal: UInt64 = 0
-        var samples: UInt64 = 0
+        var samples: [ScreenHSV] = []
+        let sampledRows = ((height - 1) / stride) + 1
+        let sampledColumns = ((width - 1) / stride) + 1
+        samples.reserveCapacity(sampledRows * sampledColumns)
 
         var y = 0
         while y < height {
@@ -425,10 +462,13 @@ extension ScreenCapture {
             while x < width {
                 let offset = rowStart + (x * 4)
                 if offset + 2 < bytes.count {
-                    blueTotal += UInt64(bytes[offset])
-                    greenTotal += UInt64(bytes[offset + 1])
-                    redTotal += UInt64(bytes[offset + 2])
-                    samples += 1
+                    samples.append(
+                        hsv(
+                            red: bytes[offset + 2],
+                            green: bytes[offset + 1],
+                            blue: bytes[offset]
+                        )
+                    )
                 }
                 x += stride
             }
@@ -436,19 +476,272 @@ extension ScreenCapture {
             y += stride
         }
 
-        guard samples > 0 else {
+        guard !samples.isEmpty else {
             return ScreenRGB(r: 0, g: 0, b: 0)
         }
 
-        return ScreenRGB(
-            r: roundedUInt8(redTotal, samples),
-            g: roundedUInt8(greenTotal, samples),
-            b: roundedUInt8(blueTotal, samples)
+        return dominantColor(from: samples)
+    }
+
+    private static var dominantColorClusterCount: Int { 4 }
+
+    private static var dominantColorIterationLimit: Int { 4 }
+
+    private static func dominantColor(from samples: [ScreenHSV]) -> ScreenRGB {
+        let assignments = kMeansAssignments(for: samples)
+        let winningCluster = largestCluster(in: assignments)
+
+        var hueSinTotal = 0.0
+        var hueCosTotal = 0.0
+        var saturationTotal = 0.0
+        var valueTotal = 0.0
+        var sampleCount = 0
+
+        for index in samples.indices where assignments[index] == winningCluster {
+            let sample = samples[index]
+            hueSinTotal += sample.hueSin
+            hueCosTotal += sample.hueCos
+            saturationTotal += sample.saturation
+            valueTotal += sample.value
+            sampleCount += 1
+        }
+
+        guard sampleCount > 0 else {
+            return ScreenRGB(r: 0, g: 0, b: 0)
+        }
+
+        let count = Double(sampleCount)
+        return rgb(
+            from: ScreenHSV(
+                hue: circularMeanHue(sinTotal: hueSinTotal, cosTotal: hueCosTotal),
+                saturation: saturationTotal / count,
+                value: valueTotal / count
+            )
         )
     }
 
-    private static func roundedUInt8(_ total: UInt64, _ count: UInt64) -> UInt8 {
-        UInt8(clamping: Int((Double(total) / Double(count)).rounded()))
+    private static func kMeansAssignments(for samples: [ScreenHSV]) -> [Int] {
+        var centroids = initialChromaCentroids()
+        var assignments = [Int](repeating: -1, count: samples.count)
+
+        for _ in 0..<dominantColorIterationLimit {
+            var changed = false
+
+            for index in samples.indices {
+                let cluster = nearestCluster(to: samples[index].chromaPoint, centroids: centroids)
+                if assignments[index] != cluster {
+                    assignments[index] = cluster
+                    changed = true
+                }
+            }
+
+            var xTotals = [Double](repeating: 0, count: dominantColorClusterCount)
+            var yTotals = [Double](repeating: 0, count: dominantColorClusterCount)
+            var counts = [Int](repeating: 0, count: dominantColorClusterCount)
+
+            for index in samples.indices {
+                let cluster = assignments[index]
+                let point = samples[index].chromaPoint
+                xTotals[cluster] += point.x
+                yTotals[cluster] += point.y
+                counts[cluster] += 1
+            }
+
+            for cluster in 0..<dominantColorClusterCount where counts[cluster] > 0 {
+                centroids[cluster] = ChromaPoint(
+                    x: xTotals[cluster] / Double(counts[cluster]),
+                    y: yTotals[cluster] / Double(counts[cluster])
+                )
+            }
+
+            if !changed {
+                break
+            }
+        }
+
+        return assignments
+    }
+
+    private static func initialChromaCentroids() -> [ChromaPoint] {
+        (0..<dominantColorClusterCount).map { cluster in
+            ChromaPoint(
+                hue: Double(cluster) * 360.0 / Double(dominantColorClusterCount),
+                saturation: 1
+            )
+        }
+    }
+
+    private static func nearestCluster(to point: ChromaPoint, centroids: [ChromaPoint]) -> Int {
+        var bestCluster = 0
+        var bestDistance = point.distanceSquared(to: centroids[0])
+
+        for cluster in 1..<centroids.count {
+            let distance = point.distanceSquared(to: centroids[cluster])
+            if distance < bestDistance {
+                bestCluster = cluster
+                bestDistance = distance
+            }
+        }
+
+        return bestCluster
+    }
+
+    private static func largestCluster(in assignments: [Int]) -> Int {
+        var counts = [Int](repeating: 0, count: dominantColorClusterCount)
+        for cluster in assignments {
+            counts[cluster] += 1
+        }
+
+        var winningCluster = 0
+        var winningCount = counts[0]
+        for cluster in 1..<counts.count where counts[cluster] > winningCount {
+            winningCluster = cluster
+            winningCount = counts[cluster]
+        }
+
+        return winningCluster
+    }
+
+    private static func hsv(red: UInt8, green: UInt8, blue: UInt8) -> ScreenHSV {
+        let red = Double(red) / 255.0
+        let green = Double(green) / 255.0
+        let blue = Double(blue) / 255.0
+
+        let maxChannel = max(red, green, blue)
+        let minChannel = min(red, green, blue)
+        let delta = maxChannel - minChannel
+
+        var hue = 0.0
+        if delta > 0 {
+            if maxChannel == red {
+                hue = 60.0 * ((green - blue) / delta).truncatingRemainder(dividingBy: 6)
+            } else if maxChannel == green {
+                hue = 60.0 * (((blue - red) / delta) + 2)
+            } else {
+                hue = 60.0 * (((red - green) / delta) + 4)
+            }
+        }
+
+        return ScreenHSV(
+            hue: normalizedHue(hue),
+            saturation: maxChannel == 0 ? 0 : delta / maxChannel,
+            value: maxChannel
+        )
+    }
+
+    private static func rgb(from hsv: ScreenHSV) -> ScreenRGB {
+        let hue = normalizedHue(hsv.hue)
+        let saturation = clampUnit(hsv.saturation)
+        let value = clampUnit(hsv.value)
+
+        let chroma = value * saturation
+        let hueSegment = hue / 60.0
+        let x = chroma * (1 - abs(hueSegment.truncatingRemainder(dividingBy: 2) - 1))
+        let match = value - chroma
+
+        var red = 0.0
+        var green = 0.0
+        var blue = 0.0
+
+        switch hueSegment {
+        case 0..<1:
+            red = chroma
+            green = x
+        case 1..<2:
+            red = x
+            green = chroma
+        case 2..<3:
+            green = chroma
+            blue = x
+        case 3..<4:
+            green = x
+            blue = chroma
+        case 4..<5:
+            red = x
+            blue = chroma
+        case 5..<6:
+            red = chroma
+            blue = x
+        default:
+            break
+        }
+
+        return ScreenRGB(
+            r: UInt8(clamping: Int(((red + match) * 255.0).rounded())),
+            g: UInt8(clamping: Int(((green + match) * 255.0).rounded())),
+            b: UInt8(clamping: Int(((blue + match) * 255.0).rounded()))
+        )
+    }
+
+    private static func circularMeanHue(sinTotal: Double, cosTotal: Double) -> Double {
+        guard sinTotal != 0 || cosTotal != 0 else {
+            return 0
+        }
+
+        return normalizedHue(radiansToDegrees(atan2(sinTotal, cosTotal)))
+    }
+
+    private static func normalizedHue(_ hue: Double) -> Double {
+        let normalized = hue.truncatingRemainder(dividingBy: 360)
+        let positive = normalized < 0 ? normalized + 360 : normalized
+        return abs(positive - 360) < 1e-9 ? 0 : positive
+    }
+
+    private static func clampUnit(_ value: Double) -> Double {
+        min(1, max(0, value))
+    }
+
+    private static func degreesToRadians(_ degrees: Double) -> Double {
+        degrees * .pi / 180.0
+    }
+
+    private static func radiansToDegrees(_ radians: Double) -> Double {
+        radians * 180.0 / .pi
+    }
+
+    private struct ScreenHSV {
+        let hue: Double
+        let saturation: Double
+        let value: Double
+        let hueSin: Double
+        let hueCos: Double
+        let chromaPoint: ChromaPoint
+
+        init(hue: Double, saturation: Double, value: Double) {
+            self.hue = normalizedHue(hue)
+            self.saturation = clampUnit(saturation)
+            self.value = clampUnit(value)
+
+            let radians = degreesToRadians(self.hue)
+            self.hueSin = sin(radians)
+            self.hueCos = cos(radians)
+            self.chromaPoint = ChromaPoint(
+                x: self.saturation * self.hueCos,
+                y: self.saturation * self.hueSin
+            )
+        }
+    }
+
+    private struct ChromaPoint {
+        var x: Double
+        var y: Double
+
+        init(x: Double, y: Double) {
+            self.x = x
+            self.y = y
+        }
+
+        init(hue: Double, saturation: Double) {
+            let radians = degreesToRadians(hue)
+            self.x = saturation * cos(radians)
+            self.y = saturation * sin(radians)
+        }
+
+        func distanceSquared(to other: ChromaPoint) -> Double {
+            let xDistance = x - other.x
+            let yDistance = y - other.y
+            return (xDistance * xDistance) + (yDistance * yDistance)
+        }
     }
 
     @MainActor

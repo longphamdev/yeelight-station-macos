@@ -1,8 +1,8 @@
 # ScreenCapture
 
 `ScreenCapture` lists macOS displays, checks Screen Recording permission,
-captures display frames, and computes average screen colors from captured frame
-bytes.
+captures display frames, and computes dominant sampled screen colors from
+captured frame bytes.
 
 ## Public API
 
@@ -35,7 +35,9 @@ public struct ScreenRGB
 
 ## Average Color
 
-`CapturedFrame.averageColor(sampleStride:)` returns `ScreenRGB`.
+`CapturedFrame.averageColor(sampleStride:)` returns `ScreenRGB`. The method name
+is kept for API compatibility, but internally it samples BGRA pixels, clusters
+them in HSV hue/saturation space, and returns the dominant cluster color.
 
 ```swift
 let frame = try await ScreenCapture.capture(screen: 0)
@@ -43,11 +45,15 @@ let color = frame.averageColor(sampleStride: 8)
 print(color.array)
 ```
 
-`sampleStride` controls how many pixels are sampled:
+`sampleStride` controls how many pixels are sampled before HSV clustering:
 
 - Lower values sample more pixels and cost more CPU.
 - Higher values sample fewer pixels and are faster but less precise.
 - Values below `1` are clamped to `1`.
+
+For live syncing, `ScreenCaptureSession.averageColor(sampleStride:)` draws the
+captured display into a small color-only buffer sized from `sampleStride` before
+clustering. This avoids a full-resolution BGRA redraw for each color update.
 
 ## Permission Flow
 

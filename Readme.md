@@ -2,9 +2,10 @@
 
 Sync your Mac screen color to Yeelight Wi-Fi bulbs.
 
-`YeelightSyncColorScreen` captures one display, computes the average screen
-color, and streams that color to the Yeelight bulbs you choose. It uses Yeelight
-music mode so color updates can be sent quickly while the sync is running.
+`YeelightSyncColorScreen` captures one display, computes the dominant sampled
+screen color with HSV clustering, and streams that color to the Yeelight bulbs
+you choose. It uses Yeelight music mode so color updates can be sent quickly
+while the sync is running.
 
 ## What You Need
 
@@ -47,10 +48,13 @@ Example:
 Start syncing display `0` to that bulb:
 
 ```bash
-swift run YeelightSyncColorScreen --display 0 --id 0x00000000189921cf
+swift run -c release YeelightSyncColorScreen --display 0 --id 0x00000000189921cf
 ```
 
 Stop syncing with `Ctrl-C`.
+
+Use `-c release` for normal syncing. Plain `swift run` uses a debug build and
+can use much more CPU.
 
 ## Screen Recording Permission
 
@@ -81,25 +85,25 @@ swift run YeelightSyncColorScreen --list-devices --discovery-timeout 10
 Sync one bulb:
 
 ```bash
-swift run YeelightSyncColorScreen --display 0 --id <device-id>
+swift run -c release YeelightSyncColorScreen --display 0 --id <device-id>
 ```
 
 Sync multiple bulbs:
 
 ```bash
-swift run YeelightSyncColorScreen --display 0 --id <device-id-1> --id <device-id-2>
+swift run -c release YeelightSyncColorScreen --display 0 --id <device-id-1> --id <device-id-2>
 ```
 
-Lower the update rate:
+Use smoother updates with more CPU:
 
 ```bash
-swift run YeelightSyncColorScreen --display 0 --id <device-id> --fps 5
+swift run -c release YeelightSyncColorScreen --display 0 --id <device-id> --fps 10
 ```
 
-Use faster but rougher color sampling:
+Use more precise color sampling with more CPU:
 
 ```bash
-swift run YeelightSyncColorScreen --display 0 --id <device-id> --sample-stride 16
+swift run -c release YeelightSyncColorScreen --display 0 --id <device-id> --sample-stride 16
 ```
 
 ## Options
@@ -108,9 +112,10 @@ swift run YeelightSyncColorScreen --display 0 --id <device-id> --sample-stride 1
 - `--list-devices`: Discover Yeelight bulbs on the local network.
 - `--display <id>`: Required for sync mode. Use an ID from `--list-displays`.
 - `--id <device-id>`: Required for sync mode. Repeat it for multiple bulbs.
-- `--fps <number>`: Updates per second. Default: `10`.
-- `--sample-stride <number>`: Pixel sampling step. Default: `8`. Lower is more
-  accurate and uses more CPU; higher is faster and rougher.
+- `--fps <number>`: Updates per second. Default: `2`.
+- `--sample-stride <number>`: Pixel sampling step before HSV clustering.
+  Default: `64`. Lower is more precise and uses more CPU; higher is faster and
+  rougher.
 - `--discovery-timeout <seconds>`: Device discovery wait time. Default: `5`.
 
 ## What Happens With Dark Screens

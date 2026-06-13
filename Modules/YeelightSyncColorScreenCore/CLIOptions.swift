@@ -9,12 +9,16 @@ public enum CLIAction: Equatable, Sendable {
 }
 
 public struct CLIOptions: Equatable, Sendable {
+    public static let defaultFPS: Double = 2
+    public static let defaultSampleStride: Int = 64
+    public static let defaultDiscoveryTimeout: TimeInterval = 5
+
     public var action: CLIAction = .sync
     public var displayID: Int?
     public var deviceIDs: [String] = []
-    public var fps: Double = 10
-    public var sampleStride: Int = 8
-    public var discoveryTimeout: TimeInterval = 5
+    public var fps: Double = Self.defaultFPS
+    public var sampleStride: Int = Self.defaultSampleStride
+    public var discoveryTimeout: TimeInterval = Self.defaultDiscoveryTimeout
 
     public init() {}
 }

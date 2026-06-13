@@ -34,6 +34,14 @@ final class CLIOptionsTests: XCTestCase {
         XCTAssertEqual(options.discoveryTimeout, 3)
     }
 
+    func testDefaultSyncSettingsFavorLowCPU() throws {
+        let options = try CLIParser.parse(["--display", "0", "--id", "device-1"])
+
+        XCTAssertEqual(options.fps, 2)
+        XCTAssertEqual(options.sampleStride, 64)
+        XCTAssertEqual(options.discoveryTimeout, 5)
+    }
+
     func testListDevicesDoesNotRequireSyncArguments() throws {
         let options = try CLIParser.parse(["--list-devices", "--discovery-timeout", "1"])
 

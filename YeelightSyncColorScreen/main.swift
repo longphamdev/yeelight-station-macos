@@ -72,7 +72,7 @@ struct YeelightSyncColorScreenCLI {
         Usage:
           YeelightSyncColorScreen --list-displays
           YeelightSyncColorScreen --list-devices [--discovery-timeout seconds]
-          YeelightSyncColorScreen --display <id> --id <device-id> [--id <device-id>] [--fps 10] [--sample-stride 8] [--discovery-timeout 5]
+          YeelightSyncColorScreen --display <id> --id <device-id> [--id <device-id>] [--fps \(Int(CLIOptions.defaultFPS))] [--sample-stride \(CLIOptions.defaultSampleStride)] [--discovery-timeout \(Int(CLIOptions.defaultDiscoveryTimeout))]
 
         """
     }

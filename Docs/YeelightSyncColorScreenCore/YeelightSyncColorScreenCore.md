@@ -12,14 +12,14 @@ conversion between screen capture and Yeelight Wi-Fi types.
 let options = try CLIParser.parse([
     "--display", "0",
     "--id", "0x00000000189921cf",
-    "--fps", "10"
+    "--fps", "2"
 ])
 ```
 
 Defaults:
 
-- `fps`: `10`
-- `sampleStride`: `8`
+- `fps`: `2`
+- `sampleStride`: `64`
 - `discoveryTimeout`: `5`
 
 Sync mode requires:

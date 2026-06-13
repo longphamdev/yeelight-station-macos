@@ -18,35 +18,73 @@ final class ScreenCaptureTests: XCTestCase {
     }
 
     func testAverageColorFromSyntheticBGRABytes() {
-        let frame = CapturedFrame(
-            display: makeDisplay(),
+        let frame = makeFrame(
             width: 2,
-            height: 1,
-            bytesPerRow: 8,
-            bytes: [
-                30, 20, 10, 255,
-                90, 80, 70, 255
-            ]
+            bytes: bgra(r: 255, g: 0, b: 0) + bgra(r: 127, g: 0, b: 0)
         )
 
-        XCTAssertEqual(frame.averageColor(sampleStride: 1), ScreenRGB(r: 40, g: 50, b: 60))
+        XCTAssertEqual(frame.averageColor(sampleStride: 1), ScreenRGB(r: 191, g: 0, b: 0))
+    }
+
+    func testDominantClusterWinsOverMinorityColors() {
+        let frame = makeFrame(
+            width: 6,
+            bytes: bgra(r: 0, g: 255, b: 0)
+                + bgra(r: 0, g: 255, b: 0)
+                + bgra(r: 0, g: 255, b: 0)
+                + bgra(r: 0, g: 255, b: 0)
+                + bgra(r: 255, g: 0, b: 0)
+                + bgra(r: 255, g: 0, b: 0)
+        )
+
+        XCTAssertEqual(frame.averageColor(sampleStride: 1), ScreenRGB(r: 0, g: 255, b: 0))
+    }
+
+    func testHueWrapAroundAveragesNearZeroDegrees() {
+        let frame = makeFrame(
+            width: 4,
+            bytes: bgra(r: 255, g: 0, b: 43)
+                + bgra(r: 255, g: 43, b: 0)
+                + bgra(r: 255, g: 0, b: 43)
+                + bgra(r: 255, g: 43, b: 0)
+        )
+
+        let color = frame.averageColor(sampleStride: 1)
+
+        XCTAssertGreaterThanOrEqual(color.r, 250)
+        XCTAssertLessThanOrEqual(color.g, 5)
+        XCTAssertLessThanOrEqual(color.b, 5)
     }
 
     func testAverageColorSampleStrideIsDeterministic() {
-        let frame = CapturedFrame(
-            display: makeDisplay(),
+        let frame = makeFrame(
             width: 4,
-            height: 1,
-            bytesPerRow: 16,
-            bytes: [
-                1, 2, 10, 255,
-                100, 100, 100, 255,
-                5, 6, 30, 255,
-                200, 200, 200, 255
-            ]
+            bytes: bgra(r: 0, g: 0, b: 255)
+                + bgra(r: 255, g: 0, b: 0)
+                + bgra(r: 0, g: 0, b: 255)
+                + bgra(r: 255, g: 0, b: 0)
         )
 
-        XCTAssertEqual(frame.averageColor(sampleStride: 2), ScreenRGB(r: 20, g: 4, b: 3))
+        XCTAssertEqual(frame.averageColor(sampleStride: 1), ScreenRGB(r: 255, g: 0, b: 0))
+        XCTAssertEqual(frame.averageColor(sampleStride: 2), ScreenRGB(r: 0, g: 0, b: 255))
+    }
+
+    func testAverageColorReturnsBlackForInvalidInput() {
+        let emptyFrame = makeFrame(width: 0, height: 0, bytes: [])
+        let shortFrame = makeFrame(width: 1, bytes: [0, 0])
+
+        XCTAssertEqual(emptyFrame.averageColor(sampleStride: 1), ScreenRGB(r: 0, g: 0, b: 0))
+        XCTAssertEqual(shortFrame.averageColor(sampleStride: 1), ScreenRGB(r: 0, g: 0, b: 0))
+    }
+
+    func testColorBufferSizeUsesSampleStride() {
+        let defaultSize = ScreenCapture.colorBufferSize(width: 1920, height: 1080, sampleStride: 64)
+        let clampedSize = ScreenCapture.colorBufferSize(width: 1, height: 1, sampleStride: 0)
+
+        XCTAssertEqual(defaultSize.width, 30)
+        XCTAssertEqual(defaultSize.height, 17)
+        XCTAssertEqual(clampedSize.width, 1)
+        XCTAssertEqual(clampedSize.height, 1)
     }
 
     func testReusableBufferKeepsStorageForSameDimensions() throws {
@@ -143,6 +181,24 @@ final class ScreenCaptureTests: XCTestCase {
 
     private var liveCaptureTestsEnabled: Bool {
         ProcessInfo.processInfo.environment["ALLOW_SCREEN_CAPTURE_TESTS"] == "1"
+    }
+
+    private func makeFrame(width: Int, height: Int = 1, bytes: [UInt8]) -> CapturedFrame {
+        CapturedFrame(
+            display: makeDisplay(
+                pixelWidth: width,
+                pixelHeight: height,
+                bounds: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height))
+            ),
+            width: width,
+            height: height,
+            bytesPerRow: width * 4,
+            bytes: bytes
+        )
+    }
+
+    private func bgra(r: UInt8, g: UInt8, b: UInt8, a: UInt8 = 255) -> [UInt8] {
+        [b, g, r, a]
     }
 
     private func makeDisplay(
