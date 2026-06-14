@@ -449,11 +449,61 @@ extension ScreenCapture {
         }
 
         let stride = max(1, sampleStride)
-        var samples: [ScreenHSV] = []
-        let sampledRows = ((height - 1) / stride) + 1
-        let sampledColumns = ((width - 1) / stride) + 1
-        samples.reserveCapacity(sampledRows * sampledColumns)
+        return dominantColor(
+            in: bytes,
+            width: width,
+            height: height,
+            bytesPerRow: bytesPerRow,
+            sampleStride: stride
+        )
+    }
 
+    private static var dominantColorClusterCount: Int { 4 }
+
+    private static var dominantColorIterationLimit: Int { 4 }
+
+    private static func dominantColor(
+        in bytes: [UInt8],
+        width: Int,
+        height: Int,
+        bytesPerRow: Int,
+        sampleStride: Int
+    ) -> ScreenRGB {
+        var centroids = initialChromaCentroids()
+
+        for _ in 0..<dominantColorIterationLimit {
+            var totals = ClusterTotals()
+            forEachSample(in: bytes, width: width, height: height, bytesPerRow: bytesPerRow, sampleStride: sampleStride) { sample in
+                totals.add(sample.chromaPoint, to: nearestCluster(to: sample.chromaPoint, centroids: centroids))
+            }
+
+            guard totals.sampleCount > 0 else {
+                return ScreenRGB(r: 0, g: 0, b: 0)
+            }
+
+            totals.updateCentroids(&centroids)
+        }
+
+        var clusterColors = ClusterColorTotals()
+        forEachSample(in: bytes, width: width, height: height, bytesPerRow: bytesPerRow, sampleStride: sampleStride) { sample in
+            clusterColors.add(sample, to: nearestCluster(to: sample.chromaPoint, centroids: centroids))
+        }
+
+        guard let winningColor = clusterColors.winningColor else {
+            return ScreenRGB(r: 0, g: 0, b: 0)
+        }
+
+        return rgb(from: winningColor)
+    }
+
+    private static func forEachSample(
+        in bytes: [UInt8],
+        width: Int,
+        height: Int,
+        bytesPerRow: Int,
+        sampleStride: Int,
+        _ body: (HSVSample) -> Void
+    ) {
         var y = 0
         while y < height {
             let rowStart = y * bytesPerRow
@@ -462,7 +512,7 @@ extension ScreenCapture {
             while x < width {
                 let offset = rowStart + (x * 4)
                 if offset + 2 < bytes.count {
-                    samples.append(
+                    body(
                         hsv(
                             red: bytes[offset + 2],
                             green: bytes[offset + 1],
@@ -470,139 +520,47 @@ extension ScreenCapture {
                         )
                     )
                 }
-                x += stride
+                x += sampleStride
             }
 
-            y += stride
+            y += sampleStride
         }
-
-        guard !samples.isEmpty else {
-            return ScreenRGB(r: 0, g: 0, b: 0)
-        }
-
-        return dominantColor(from: samples)
     }
 
-    private static var dominantColorClusterCount: Int { 4 }
-
-    private static var dominantColorIterationLimit: Int { 4 }
-
-    private static func dominantColor(from samples: [ScreenHSV]) -> ScreenRGB {
-        let assignments = kMeansAssignments(for: samples)
-        let winningCluster = largestCluster(in: assignments)
-
-        var hueSinTotal = 0.0
-        var hueCosTotal = 0.0
-        var saturationTotal = 0.0
-        var valueTotal = 0.0
-        var sampleCount = 0
-
-        for index in samples.indices where assignments[index] == winningCluster {
-            let sample = samples[index]
-            hueSinTotal += sample.hueSin
-            hueCosTotal += sample.hueCos
-            saturationTotal += sample.saturation
-            valueTotal += sample.value
-            sampleCount += 1
-        }
-
-        guard sampleCount > 0 else {
-            return ScreenRGB(r: 0, g: 0, b: 0)
-        }
-
-        let count = Double(sampleCount)
-        return rgb(
-            from: ScreenHSV(
-                hue: circularMeanHue(sinTotal: hueSinTotal, cosTotal: hueCosTotal),
-                saturation: saturationTotal / count,
-                value: valueTotal / count
-            )
+    private static func initialChromaCentroids() -> ChromaCentroids {
+        ChromaCentroids(
+            first: ChromaPoint(hue: 0, saturation: 1),
+            second: ChromaPoint(hue: 90, saturation: 1),
+            third: ChromaPoint(hue: 180, saturation: 1),
+            fourth: ChromaPoint(hue: 270, saturation: 1)
         )
     }
 
-    private static func kMeansAssignments(for samples: [ScreenHSV]) -> [Int] {
-        var centroids = initialChromaCentroids()
-        var assignments = [Int](repeating: -1, count: samples.count)
-
-        for _ in 0..<dominantColorIterationLimit {
-            var changed = false
-
-            for index in samples.indices {
-                let cluster = nearestCluster(to: samples[index].chromaPoint, centroids: centroids)
-                if assignments[index] != cluster {
-                    assignments[index] = cluster
-                    changed = true
-                }
-            }
-
-            var xTotals = [Double](repeating: 0, count: dominantColorClusterCount)
-            var yTotals = [Double](repeating: 0, count: dominantColorClusterCount)
-            var counts = [Int](repeating: 0, count: dominantColorClusterCount)
-
-            for index in samples.indices {
-                let cluster = assignments[index]
-                let point = samples[index].chromaPoint
-                xTotals[cluster] += point.x
-                yTotals[cluster] += point.y
-                counts[cluster] += 1
-            }
-
-            for cluster in 0..<dominantColorClusterCount where counts[cluster] > 0 {
-                centroids[cluster] = ChromaPoint(
-                    x: xTotals[cluster] / Double(counts[cluster]),
-                    y: yTotals[cluster] / Double(counts[cluster])
-                )
-            }
-
-            if !changed {
-                break
-            }
-        }
-
-        return assignments
-    }
-
-    private static func initialChromaCentroids() -> [ChromaPoint] {
-        (0..<dominantColorClusterCount).map { cluster in
-            ChromaPoint(
-                hue: Double(cluster) * 360.0 / Double(dominantColorClusterCount),
-                saturation: 1
-            )
-        }
-    }
-
-    private static func nearestCluster(to point: ChromaPoint, centroids: [ChromaPoint]) -> Int {
+    private static func nearestCluster(to point: ChromaPoint, centroids: ChromaCentroids) -> Int {
         var bestCluster = 0
-        var bestDistance = point.distanceSquared(to: centroids[0])
+        var bestDistance = point.distanceSquared(to: centroids.first)
 
-        for cluster in 1..<centroids.count {
-            let distance = point.distanceSquared(to: centroids[cluster])
-            if distance < bestDistance {
-                bestCluster = cluster
-                bestDistance = distance
-            }
+        let secondDistance = point.distanceSquared(to: centroids.second)
+        if secondDistance < bestDistance {
+            bestCluster = 1
+            bestDistance = secondDistance
+        }
+
+        let thirdDistance = point.distanceSquared(to: centroids.third)
+        if thirdDistance < bestDistance {
+            bestCluster = 2
+            bestDistance = thirdDistance
+        }
+
+        let fourthDistance = point.distanceSquared(to: centroids.fourth)
+        if fourthDistance < bestDistance {
+            bestCluster = 3
         }
 
         return bestCluster
     }
 
-    private static func largestCluster(in assignments: [Int]) -> Int {
-        var counts = [Int](repeating: 0, count: dominantColorClusterCount)
-        for cluster in assignments {
-            counts[cluster] += 1
-        }
-
-        var winningCluster = 0
-        var winningCount = counts[0]
-        for cluster in 1..<counts.count where counts[cluster] > winningCount {
-            winningCluster = cluster
-            winningCount = counts[cluster]
-        }
-
-        return winningCluster
-    }
-
-    private static func hsv(red: UInt8, green: UInt8, blue: UInt8) -> ScreenHSV {
+    private static func hsv(red: UInt8, green: UInt8, blue: UInt8) -> HSVSample {
         let red = Double(red) / 255.0
         let green = Double(green) / 255.0
         let blue = Double(blue) / 255.0
@@ -622,14 +580,14 @@ extension ScreenCapture {
             }
         }
 
-        return ScreenHSV(
+        return HSVSample(
             hue: normalizedHue(hue),
             saturation: maxChannel == 0 ? 0 : delta / maxChannel,
             value: maxChannel
         )
     }
 
-    private static func rgb(from hsv: ScreenHSV) -> ScreenRGB {
+    private static func rgb(from hsv: HSVSample) -> ScreenRGB {
         let hue = normalizedHue(hsv.hue)
         let saturation = clampUnit(hsv.saturation)
         let value = clampUnit(hsv.value)
@@ -699,7 +657,7 @@ extension ScreenCapture {
         radians * 180.0 / .pi
     }
 
-    private struct ScreenHSV {
+    private struct HSVSample {
         let hue: Double
         let saturation: Double
         let value: Double
@@ -719,6 +677,132 @@ extension ScreenCapture {
                 x: self.saturation * self.hueCos,
                 y: self.saturation * self.hueSin
             )
+        }
+    }
+
+    private struct ChromaCentroids {
+        var first: ChromaPoint
+        var second: ChromaPoint
+        var third: ChromaPoint
+        var fourth: ChromaPoint
+    }
+
+    private struct ClusterTotals {
+        private var firstX = 0.0
+        private var firstY = 0.0
+        private var firstCount = 0
+        private var secondX = 0.0
+        private var secondY = 0.0
+        private var secondCount = 0
+        private var thirdX = 0.0
+        private var thirdY = 0.0
+        private var thirdCount = 0
+        private var fourthX = 0.0
+        private var fourthY = 0.0
+        private var fourthCount = 0
+
+        var sampleCount: Int {
+            firstCount + secondCount + thirdCount + fourthCount
+        }
+
+        mutating func add(_ point: ChromaPoint, to cluster: Int) {
+            switch cluster {
+            case 0:
+                firstX += point.x
+                firstY += point.y
+                firstCount += 1
+            case 1:
+                secondX += point.x
+                secondY += point.y
+                secondCount += 1
+            case 2:
+                thirdX += point.x
+                thirdY += point.y
+                thirdCount += 1
+            default:
+                fourthX += point.x
+                fourthY += point.y
+                fourthCount += 1
+            }
+        }
+
+        func updateCentroids(_ centroids: inout ChromaCentroids) {
+            if firstCount > 0 {
+                centroids.first = ChromaPoint(x: firstX / Double(firstCount), y: firstY / Double(firstCount))
+            }
+            if secondCount > 0 {
+                centroids.second = ChromaPoint(x: secondX / Double(secondCount), y: secondY / Double(secondCount))
+            }
+            if thirdCount > 0 {
+                centroids.third = ChromaPoint(x: thirdX / Double(thirdCount), y: thirdY / Double(thirdCount))
+            }
+            if fourthCount > 0 {
+                centroids.fourth = ChromaPoint(x: fourthX / Double(fourthCount), y: fourthY / Double(fourthCount))
+            }
+        }
+    }
+
+    private struct ClusterColorTotals {
+        private var first = ColorTotal()
+        private var second = ColorTotal()
+        private var third = ColorTotal()
+        private var fourth = ColorTotal()
+
+        var winningColor: HSVSample? {
+            var winning = first
+            if second.count > winning.count {
+                winning = second
+            }
+            if third.count > winning.count {
+                winning = third
+            }
+            if fourth.count > winning.count {
+                winning = fourth
+            }
+
+            return winning.color
+        }
+
+        mutating func add(_ sample: HSVSample, to cluster: Int) {
+            switch cluster {
+            case 0:
+                first.add(sample)
+            case 1:
+                second.add(sample)
+            case 2:
+                third.add(sample)
+            default:
+                fourth.add(sample)
+            }
+        }
+    }
+
+    private struct ColorTotal {
+        private var hueSinTotal = 0.0
+        private var hueCosTotal = 0.0
+        private var saturationTotal = 0.0
+        private var valueTotal = 0.0
+        private(set) var count = 0
+
+        var color: HSVSample? {
+            guard count > 0 else {
+                return nil
+            }
+
+            let count = Double(count)
+            return HSVSample(
+                hue: circularMeanHue(sinTotal: hueSinTotal, cosTotal: hueCosTotal),
+                saturation: saturationTotal / count,
+                value: valueTotal / count
+            )
+        }
+
+        mutating func add(_ sample: HSVSample) {
+            hueSinTotal += sample.hueSin
+            hueCosTotal += sample.hueCos
+            saturationTotal += sample.saturation
+            valueTotal += sample.value
+            count += 1
         }
     }
 
